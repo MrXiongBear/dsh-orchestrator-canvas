@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>编排画布预览 · normal · dark</title>
+<style>
+:root {
+  --dsw-alias-bg-base: #16181c;
+  --dsw-alias-bg-overlay: #1d2025;
+  --dsw-alias-bg-layer-1: #22262c;
+  --dsw-alias-bg-layer-2: #2a2f36;
+  --dsw-alias-label-primary: #e8eaed;
+  --dsw-alias-label-secondary: #9aa4b0;
+  --dsw-alias-border-l1: #31363d;
+  --dsw-alias-border-l2: #454c55;
+  --dsw-alias-brand-primary: #6b9bff;
+  --dsw-alias-state-success-primary: #3ecf8e;
+  --dsw-alias-state-error-primary: #ff6b6b;
+  --dsw-alias-state-warn-primary: #f0b64a;
+  --dsw-alias-state-idle-primary: #6b7480;
+}
+html, body { margin: 0; padding: 0; background: var(--dsw-alias-bg-base); }
+body { padding: 24px; }
+/* 预览里冻结动画，保证截图可复现 */
+.orch-root * { animation: none !important; }
+
+.orch-root, .orch-root * { box-sizing: border-box; }
+.orch-root {
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* ---- 遮罩与面板 ---- */
+.orch-backdrop {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 62%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 宿主浮层本身是 click-through，入口必须自己打开指针事件并压在最高层。 */
+  pointer-events: auto;
+  z-index: 2147483000;
+}
+.orch-panel {
+  width: min(1180px, calc(100vw - 96px));
+  height: min(760px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-overlay);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+.orch-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  flex: 0 0 auto;
+}
+.orch-title { font-size: 14px; font-weight: 600; white-space: nowrap; flex: 0 0 auto; }
+.orch-sub { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.orch-grow { flex: 1 1 auto; min-width: 0; }
+.orch-head-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; white-space: nowrap; }
+
+/* ---- 按钮 ---- */
+.orch-btn {
+  appearance: none;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.orch-btn:hover { background: var(--dsw-alias-bg-layer-2); border-color: var(--dsw-alias-border-l2); }
+.orch-btn:active { transform: translateY(1px); }
+.orch-btn[aria-pressed="true"] { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.orch-btn-quiet { border-color: transparent; background: transparent; }
+.orch-select {
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  max-width: 320px;
+}
+
+/* ---- 画布视口 ---- */
+.orch-body { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
+.orch-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 1px 1px, var(--dsw-alias-border-l1) 1px, transparent 0) 0 0 / 22px 22px,
+    var(--dsw-alias-bg-layer-1);
+  cursor: grab;
+}
+.orch-viewport[data-panning="true"] { cursor: grabbing; }
+.orch-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.orch-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.orch-edge {
+  fill: none;
+  stroke: var(--dsw-alias-border-l2);
+  stroke-width: 1.5;
+}
+.orch-edge[data-status="running"] { stroke: var(--dsw-alias-brand-primary); stroke-dasharray: 5 4; animation: orch-dash 900ms linear infinite; }
+.orch-edge[data-status="done"] { stroke: var(--dsw-alias-state-success-primary); opacity: 0.75; }
+.orch-edge[data-status="failed"] { stroke: var(--dsw-alias-state-error-primary); opacity: 0.8; }
+.orch-edge[data-status="blocked"] { stroke: var(--dsw-alias-state-warn-primary); opacity: 0.7; stroke-dasharray: 3 5; }
+@keyframes orch-dash { to { stroke-dashoffset: -18; } }
+
+/* ---- 节点卡片 ---- */
+.orch-card {
+  position: absolute;
+  width: 240px;
+  height: 112px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-overlay);
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.orch-card:hover { border-color: var(--dsw-alias-border-l2); transform: translateY(-1px); }
+.orch-card:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }
+.orch-card[data-selected="true"] { border-color: var(--dsw-alias-brand-primary); box-shadow: 0 0 0 1px var(--dsw-alias-brand-primary) inset; }
+.orch-card[data-status="failed"] { border-color: var(--dsw-alias-state-error-primary); }
+.orch-card[data-status="blocked"] { border-color: var(--dsw-alias-state-warn-primary); }
+.orch-card-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.orch-goal {
+  font-size: 13px;
+  font-weight: 500;
+  flex: 0 0 auto;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.orch-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.orch-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+.orch-card-meta > *:not(.orch-ellipsis) { flex: 0 0 auto; }
+
+/* ---- 状态点 ---- */
+.orch-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--dsw-alias-state-idle-primary); }
+.orch-dot[data-status="running"] { background: var(--dsw-alias-brand-primary); animation: orch-pulse 1.4s ease-in-out infinite; }
+.orch-dot[data-status="done"] { background: var(--dsw-alias-state-success-primary); }
+.orch-dot[data-status="failed"] { background: var(--dsw-alias-state-error-primary); }
+.orch-dot[data-status="blocked"] { background: var(--dsw-alias-state-warn-primary); }
+@keyframes orch-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--dsw-alias-brand-primary) 0%, transparent); }
+}
+
+/* ---- 徽标 ---- */
+.orch-badge {
+  font-size: 12px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-secondary);
+  flex: 0 0 auto;
+}
+.orch-badge[data-type="step"] { color: var(--dsw-alias-brand-primary); border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent); }
+.orch-badge[data-type="check"] { color: var(--dsw-alias-state-success-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent); }
+.orch-badge[data-type="merge"] { color: var(--dsw-alias-label-secondary); }
+
+/* ---- 画布工具条 ---- */
+.orch-tools {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 9px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-overlay);
+  z-index: 3;
+}
+.orch-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+/* ---- 抽屉 ---- */
+.orch-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 46%);
+  z-index: 6;
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.10);
+  border-left: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.orch-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+.orch-drawer-body { overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 14px; }
+.orch-field-label { font-size: 12px; color: var(--dsw-alias-label-secondary); margin-bottom: 4px; }
+.orch-field {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+}
+.orch-evidence { display: flex; flex-direction: column; gap: 6px; }
+.orch-evidence-row {
+  display: flex;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1);
+  font-size: 12px;
+}
+.orch-evidence-kind { color: var(--dsw-alias-brand-primary); flex: 0 0 auto; }
+.orch-warn { color: var(--dsw-alias-state-warn-primary); font-size: 12px; }
+.orch-error { color: var(--dsw-alias-state-error-primary); font-size: 12px; }
+
+/* ---- 窄屏列表视图 ---- */
+.orch-list { position: absolute; inset: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.orch-list-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-overlay);
+  cursor: pointer;
+  text-align: left;
+}
+.orch-list-item[data-selected="true"] { border-color: var(--dsw-alias-brand-primary); }
+
+/* ---- 输入框旁的入口点 ---- */
+.orch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.orch-chip:hover { border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2); }
+.orch-chip[data-open="true"] { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
+.orch-chip-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-bg-base);
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 预览外壳：只负责把面板摆到页面上 */
+.preview-shell { display: flex; flex-direction: column; gap: 10px; }
+.preview-title { font: 600 14px/1.4 system-ui, sans-serif; color: var(--dsw-alias-label-primary); }
+.preview-shell .orch-panel { width: min(1180px, calc(100vw - 96px)); height: min(760px, calc(100vh - 150px)); }
+.preview-shell .orch-backdrop { position: static; display: block; background: none; }
+.preview-shell .orch-root { position: static; }
+</style>
+</head>
+<body>
+<div class="orch-root">
+  <div class="preview-shell">
+    <div class="preview-title">离线预览 · 正常流程：2 个并行执行 + 各自检查 + 汇合 · 暗色</div>
+    <div class="orch-backdrop">
+      <div class="orch-panel">
+        <div class="orch-head">
+          <span class="orch-dot" data-status="running" aria-hidden="true"></span>
+          <span class="orch-title">编排画布</span>
+          <span class="orch-sub orch-ellipsis" title="给 DSH 插件补一个只读编排画布：先落宿主工具与图校验，再补客户端画布，最后汇合验证。">给 DSH 插件补一个只读编排画布：先落宿主工具与图校验，再补客户端画布，最后汇合验证。</span>
+          <span class="orch-sub">执行 2 · 检查 2 · 汇合 1</span>
+          <span class="orch-grow"></span>
+          <select class="orch-select"><option>20261029-normal</option></select>
+          <span class="orch-head-actions"><button type="button" class="orch-btn">刷新</button><button type="button" class="orch-btn orch-btn-quiet">✕</button></span>
+        </div>
+        <div class="orch-body">
+          <div class="orch-viewport">
+            <div class="orch-stage" style="transform:translate(0px,0px) scale(1);width:920px;height:290px">
+              <svg class="orch-edges" width="920" height="290" aria-hidden="true">
+<path class="orch-edge" data-status="done" d="M 264 80 C 302 80, 302 80, 340 80"></path>
+<path class="orch-edge" data-status="done" d="M 264 210 C 302 210, 302 210, 340 210"></path>
+<path class="orch-edge" data-status="done" d="M 580 80 C 618 80, 618 145, 656 145"></path>
+<path class="orch-edge" data-status="done" d="M 580 210 C 618 210, 618 145, 656 145"></path>
+              </svg>
+<button type="button" class="orch-card" data-status="done" data-selected="false"
+      style="left:24px;top:24px" title="实现图校验与 run.json 原子写">
+      <span class="orch-card-top"><span class="orch-dot" data-status="done" aria-hidden="true"></span><span class="orch-badge" data-type="step">执行</span>
+        <span class="orch-sub">完成</span></span>
+      <span class="orch-goal">实现图校验与 run.json 原子写</span>
+      <span class="orch-card-meta"><span class="orch-ellipsis" title="sub-plan-graph">↳ sub-plan-graph</span><span>2m30s</span></span>
+    </button>
+<button type="button" class="orch-card" data-status="done" data-selected="false"
+      style="left:24px;top:154px" title="实现只读画布与节点抽屉">
+      <span class="orch-card-top"><span class="orch-dot" data-status="done" aria-hidden="true"></span><span class="orch-badge" data-type="step">执行</span>
+        <span class="orch-sub">完成</span></span>
+      <span class="orch-goal">实现只读画布与节点抽屉</span>
+      <span class="orch-card-meta"><span class="orch-ellipsis" title="sub-plan-client">↳ sub-plan-client</span><span>2m30s</span></span>
+    </button>
+<button type="button" class="orch-card" data-status="done" data-selected="false"
+      style="left:340px;top:24px" title="graph.test.mjs ≥12 断言全绿">
+      <span class="orch-card-top"><span class="orch-dot" data-status="done" aria-hidden="true"></span><span class="orch-badge" data-type="check">检查</span>
+        <span class="orch-sub">完成</span></span>
+      <span class="orch-goal">graph.test.mjs ≥12 断言全绿</span>
+      <span class="orch-card-meta"><span>证据 1</span><span>2m30s</span></span>
+    </button>
+<button type="button" class="orch-card" data-status="done" data-selected="false"
+      style="left:340px;top:154px" title="客户端 bundle 能被宿主 materialize">
+      <span class="orch-card-top"><span class="orch-dot" data-status="done" aria-hidden="true"></span><span class="orch-badge" data-type="check">检查</span>
+        <span class="orch-sub">完成</span></span>
+      <span class="orch-goal">客户端 bundle 能被宿主 materialize</span>
+      <span class="orch-card-meta"><span>证据 1</span><span>2m30s</span></span>
+    </button>
+<button type="button" class="orch-card" data-status="done" data-selected="false"
+      style="left:656px;top:89px" title="汇合：accepted 摘要与证据链">
+      <span class="orch-card-top"><span class="orch-dot" data-status="done" aria-hidden="true"></span><span class="orch-badge" data-type="merge">汇合</span>
+        <span class="orch-sub">完成</span></span>
+      <span class="orch-goal">汇合：accepted 摘要与证据链</span>
+      <span class="orch-card-meta"><span>2m30s</span></span>
+    </button>
+            </div>
+            <div class="orch-tools">
+              <button type="button" class="orch-btn">＋</button>
+              <button type="button" class="orch-btn">－</button>
+              <button type="button" class="orch-btn">100%</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

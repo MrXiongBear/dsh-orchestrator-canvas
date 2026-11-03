@@ -1,0 +1,11 @@
+# dsh-orchestrator-canvas · 图即真相的编排闸门 + 只读编排画布
+# runsDir 省略时按 DSH_HOME 推导（<DSH_HOME>/orchestrator/runs）。
+- insert:
+    - id: orchestrator-canvas
+      name: 'dsh-orchestrator-canvas'
+      config:
+        maxParallel: 3
+        subagentProvider: spawn
+        retentionDays: 30
+        retentionBytes: 209715200
+        autoPrune: true
